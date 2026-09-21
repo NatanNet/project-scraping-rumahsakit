@@ -3,7 +3,7 @@ name: RS Email Scraper Workflow
 on:
   push:
     branches: [ main ]
-  workflow_dispatch: # Memungkinkan tombol 'Run workflow' secara manual
+  workflow_dispatch:
 
 jobs:
   scrape:
