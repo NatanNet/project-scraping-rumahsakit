@@ -26,7 +26,6 @@ const ExcelJS = require('exceljs');
 
     await page.waitForSelector('table', { timeout: 60000 });
 
-    // Ekstrak nama RS
     const hospitalNames = await page.$$eval('table tbody tr', rows => {
       return rows.map(row => {
         const cells = row.querySelectorAll('td');
@@ -36,9 +35,6 @@ const ExcelJS = require('exceljs');
 
     console.log(`Berhasil mengambil ${hospitalNames.length} nama rumah sakit.`);
 
-    // Regex Email yang lebih akurat
-    const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-
     for (const name of hospitalNames) {
       console.log(`----------------------------------------`);
       console.log(`Mencari email untuk: ${name}`);
@@ -47,61 +43,74 @@ const ExcelJS = require('exceljs');
       const searchPage = await context.newPage();
 
       try {
-        // Cari URL website resmi RS via Google HTML
-        const query = encodeURIComponent(`site:.id OR site:.com "${name}" email kontak`);
-        await searchPage.goto(`https://html.duckduckgo.com/html/?q=${query}`, { 
+        // Gunakan Bing Search untuk akurasi tinggi tanpa pemblokiran anti-bot
+        const query = encodeURIComponent(`"${name}" site:.id OR site:.com contact email`);
+        await searchPage.goto(`https://www.bing.com/search?q=${query}`, { 
           waitUntil: 'domcontentloaded', 
-          timeout: 20000 
+          timeout: 25000 
         });
 
-        // Ambil link hasil pencarian pertama
-        const links = await searchPage.$$eval('.result__url', els => els.map(e => e.href.trim()));
-        let targetUrl = links.find(link => !link.includes('kemkes.go.id') && !link.includes('wikipedia.org'));
+        // Ambil link hasil pencarian teratas
+        const links = await searchPage.$$eval('#b_results h2 a', els => els.map(e => e.href));
+        let targetUrl = links.find(link => 
+          !link.includes('kemkes.go.id') && 
+          !link.includes('wikipedia.org') && 
+          !link.includes('facebook.com') &&
+          !link.includes('instagram.com')
+        );
 
         if (targetUrl) {
-          if (!targetUrl.startsWith('http')) targetUrl = `https://${targetUrl}`;
-          
-          const rsPage = await context.newPage();
           console.log(`Membuka website: ${targetUrl}`);
+          const rsPage = await context.newPage();
           
           await rsPage.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
 
-          // 1. Cek Email di Homepage
-          let content = await rsPage.content();
-          let matches = content.match(emailRegex);
+          // TEKNIK 1: Ambil langsung dari tag mailto:[cite: 14]
+          const mailtoEmails = await rsPage.$$eval('a[href^="mailto:"]', links => {
+            return links.map(a => a.href.replace('mailto:', '').split('?')[0].trim());
+          }).catch(() => []);
 
-          // 2. Jika tidak ada di homepage, coba cari & klik menu Kontak / Contact Us
-          if (!matches || matches.length === 0) {
-            const contactLink = await rsPage.$('a[href*="contact"], a[href*="kontak"], a:has-text("Contact"), a:has-text("Kontak")').catch(() => null);
-            if (contactLink) {
-              console.log(`Membuka halaman kontak...`);
-              await Promise.all([
-                rsPage.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}),
-                contactLink.click().catch(() => {})
-              ]);
-              content = await rsPage.content();
-              matches = content.match(emailRegex);
+          if (mailtoEmails.length > 0) {
+            emailFound = mailtoEmails[0];
+            console.log(`>>> EMAIL DITEMUKAN (mailto): ${emailFound}`);
+          } else {
+            // TEKNIK 2: Cek halaman Kontak
+            const contactLink = await rsPage.$('a[href*="contact"], a[href*="kontak"], a:has-text("Contact"), a:has-text("Kontak")').catch(() => null);             if (contactLink) {               console.log('Membuka halaman kontak...');               await Promise.all([                 rsPage.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}),                 contactLink.click().catch(() => {})               ]);                const contactMailtos = await rsPage.$$eval('a[href^="mailto:"]', links => {
+                return links.map(a => a.href.replace('mailto:', '').split('?')[0].trim());
+              }).catch(() => []);
+
+              if (contactMailtos.length > 0) {
+                emailFound = contactMailtos[0];
+                console.log(`>>> EMAIL DITEMUKAN (mailto kontak): ${emailFound}`);
+              }
+            }
+
+            // TEKNIK 3: Scanning Regex Teks
+            if (emailFound === 'Tidak Ditemukan') {
+              const content = await rsPage.content();
+              const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+              const matches = content.match(emailRegex);
+
+              if (matches && matches.length > 0) {
+                const cleanEmails = [...new Set(matches)].filter(e => 
+                  !e.endsWith('.png') && 
+                  !e.endsWith('.jpg') && 
+                  !e.endsWith('.svg') &&
+                  !e.includes('example') &&
+                  !e.includes('bootstrap') &&
+                  !e.includes('w3.org')
+                );
+                if (cleanEmails.length > 0) {
+                  emailFound = cleanEmails[0];
+                  console.log(`>>> EMAIL DITEMUKAN (Regex): ${emailFound}`);
+                }
+              }
             }
           }
 
-          // Filter email palsu / file gambar
-          if (matches && matches.length > 0) {
-            const cleanEmails = [...new Set(matches)].filter(e => 
-              !e.endsWith('.png') && 
-              !e.endsWith('.jpg') && 
-              !e.endsWith('.svg') &&
-              !e.includes('bootstrap') &&
-              !e.includes('example') &&
-              !e.includes('w3.org') &&
-              !e.includes('sentry')
-            );
-
-            if (cleanEmails.length > 0) {
-              emailFound = cleanEmails[0];
-              console.log(`>>> EMAIL DITEMUKAN: ${emailFound}`);
-            }
-          }
           await rsPage.close();
+        } else {
+          console.log(`Website resmi tidak ditemukan di pencarian Bing.`);
         }
       } catch (err) {
         console.log(`Peringatan (${name}): ${err.message}`);
@@ -118,7 +127,7 @@ const ExcelJS = require('exceljs');
     await browser.close();
   }
 
- // Export ke File Excel
+  // Export File Excel
   const workbook = new ExcelJS.Workbook();
   const worksheet = workbook.addWorksheet('Data Rumah Sakit');
 
