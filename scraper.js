@@ -2,85 +2,110 @@ const { chromium } = require('playwright');
 const ExcelJS = require('exceljs');
 
 (async () => {
-  // UBAH BARIS INI:
-// const browser = await chromium.launch({ headless: false });
-
-// MENJADI INI:
-const browser = await chromium.launch({ headless: true });// set true jika tidak ingin membuka browser secara visual
-  const page = await browser.newPage();
-
-  // 1. Buka Website Dashboard SIRS Kemkes
-  await page.goto('https://sirs.kemkes.go.id/fo/home/dashboard_rs');
-  await page.waitForSelector('table');
-
-  // 2. Ekstrak nama-nama Rumah Sakit dari DOM Tabel
-  const hospitalList = await page.$$eval('table tbody tr', rows => {
-    return rows.map(row => {
-      const cells = row.querySelectorAll('td');
-      return cells[0] ? cells[0].innerText.trim() : null;
-    }).filter(name => name !== null);
+  console.log('Memulai proses scraping...');
+  
+  // Menjalankan Chromium dalam mode headless
+  const browser = await chromium.launch({ 
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox'] 
   });
 
-  console.log(`Ditemukan ${hospitalList.length} rumah sakit.`);
+  // Gunakan User-Agent seperti browser asli
+  const context = await browser.newContext({
+    userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  });
 
+  const page = await context.newPage();
   const results = [];
 
-  // 3. Loop setiap RS untuk mencari email via Google/DuckDuckGo
-  for (const rsName of hospitalList) {
-    console.log(`Mencari email untuk: ${rsName}`);
-    let emailFound = 'Tidak Ditemukan';
+  try {
+    console.log('Membuka website SIRS Kemkes...');
+    
+    // 1. Akses SIRS Kemkes dengan domcontentloaded & timeout 60 detik
+    await page.goto('https://sirs.kemkes.go.id/fo/home/dashboard_rs', { 
+      waitUntil: 'domcontentloaded', 
+      timeout: 60000 
+    });
 
-    try {
-      // Pindah ke Google untuk mencari website resmi
-      const searchPage = await browser.newPage();
-      await searchPage.goto('https://www.google.com');
-      await searchPage.fill('textarea[name="q"]', `${rsName} official website contact`);
-      await searchPage.keyboard.press('Enter');
-      await searchPage.waitForSelector('#search');
+    console.log('Menunggu tabel dimuat...');
+    await page.waitForSelector('table', { timeout: 60000 });
 
-      // Ambil URL hasil pencarian pertama
-      const firstResultLink = await searchPage.$eval('#search a', el => el.href);
-      await searchPage.close();
+    // 2. Ekstrak Nama Rumah Sakit dari Tabel
+    const hospitalNames = await page.$$eval('table tbody tr', rows => {
+      return rows.map(row => {
+        const cells = row.querySelectorAll('td');
+        return cells[0] ? cells[0].innerText.trim() : null;
+      }).filter(Boolean);
+    });
 
-      if (firstResultLink) {
-        // Buka website resmi RS
-        const rsPage = await browser.newPage();
-        await rsPage.goto(firstResultLink, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
-        
-        // Ambil isi teks seluruh halaman web untuk dicari emailnya pakai Regex
-        const pageContent = await rsPage.content();
-        const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-        const matches = pageContent.match(emailRegex);
+    console.log(`Berhasil mengambil ${hospitalNames.length} nama rumah sakit.`);
 
-        if (matches && matches.length > 0) {
-          // Filtering sederhana untuk menghindari email aset/image seperti .png/.jpg jika ada
-          const validEmails = matches.filter(e => !e.endsWith('.png') && !e.endsWith('.jpg'));
-          if (validEmails.length > 0) {
-            emailFound = validEmails[0];
+    // 3. Loop pencarian email untuk setiap RS
+    for (const name of hospitalNames) {
+      console.log(`Sedang mencari email untuk: ${name}`);
+      let emailFound = 'Tidak Ditemukan';
+
+      const searchPage = await context.newPage();
+
+      try {
+        const query = encodeURIComponent(`${name} official contact email`);
+        await searchPage.goto(`https://html.duckduckgo.com/html/?q=${query}`, { 
+          waitUntil: 'domcontentloaded', 
+          timeout: 20000 
+        });
+
+        const targetUrl = await searchPage.$eval('.result__url', el => el.href.trim()).catch(() => null);
+
+        if (targetUrl) {
+          const fullUrl = targetUrl.startsWith('http') ? targetUrl : `https://${targetUrl}`;
+          const rsPage = await context.newPage();
+          
+          await rsPage.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+          
+          const content = await rsPage.content();
+          const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+          const matches = content.match(emailRegex);
+
+          if (matches && matches.length > 0) {
+            const filteredEmails = matches.filter(e => 
+              !e.endsWith('.png') && 
+              !e.endsWith('.jpg') && 
+              !e.endsWith('.svg') &&
+              !e.includes('bootstrap') &&
+              !e.includes('example.com')
+            );
+            if (filteredEmails.length > 0) {
+              emailFound = filteredEmails[0];
+            }
           }
+          await rsPage.close();
         }
-        await rsPage.close();
+      } catch (err) {
+        console.log(`Peringatan saat memproses ${name}: ${err.message}`);
+      } finally {
+        await searchPage.close();
       }
-    } catch (err) {
-      console.log(`Gagal memproses ${rsName}: ${err.message}`);
+
+      results.push({ rumahSakit: name, email: emailFound });
     }
 
-    results.push({ rumahSakit: rsName, email: emailFound });
+  } catch (error) {
+    console.error('Error Utama:', error.message);
+  } finally {
+    await browser.close();
   }
 
-  await browser.close();
-
-  // 4. Export Hasil ke File Excel
+  // 4. Export Ke File Excel
   const workbook = new ExcelJS.Workbook();
-  const worksheet = workbook.addWorksheet('Data RS');
+  const worksheet = workbook.addWorksheet('Data Rumah Sakit');
 
   worksheet.columns = [
     { header: 'Nama Rumah Sakit', key: 'rumahSakit', width: 35 },
     { header: 'Email', key: 'email', width: 35 }
   ];
 
-  results.forEach(data => worksheet.addRow(data));
+  results.forEach(item => worksheet.addRow(item));
 
-  await workbook.xlsx.writeFile('Hasil_Email_RS.xlsx');
-  console.log('Proses selesai! File Hasil_Email_RS.xlsx berhasil dibuat.');
+  await workbook.xlsx.writeFile('Hasil_Scraping_RS.xlsx');
+  console.log('Proses selesai! File "Hasil_Scraping_RS.xlsx" berhasil dibuat.');
 })();
