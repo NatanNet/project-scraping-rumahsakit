@@ -2,7 +2,11 @@ const { chromium } = require('playwright');
 const ExcelJS = require('exceljs');
 
 (async () => {
-  const browser = await chromium.launch({ headless: false }); // set true jika tidak ingin membuka browser secara visual
+  // UBAH BARIS INI:
+// const browser = await chromium.launch({ headless: false });
+
+// MENJADI INI:
+const browser = await chromium.launch({ headless: true });// set true jika tidak ingin membuka browser secara visual
   const page = await browser.newPage();
 
   // 1. Buka Website Dashboard SIRS Kemkes
