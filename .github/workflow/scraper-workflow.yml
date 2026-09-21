@@ -3,8 +3,7 @@ name: RS Email Scraper Workflow
 on:
   push:
     branches: [ main ]
-  schedule:
-    - cron: '0 0 * * 1' # Berjalan otomatis setiap hari Senin jam 00:00
+  workflow_dispatch: # Mengizinkan tombol 'Run workflow' secara manual di GitHub
 
 jobs:
   scrape:
@@ -17,7 +16,7 @@ jobs:
     - name: Setup Node.js
       uses: actions/setup-node@v3
       with:
-        node.size: 18
+        node-version: 20
 
     - name: Install Dependencies
       run: |
@@ -32,4 +31,4 @@ jobs:
       uses: actions/upload-artifact@v3
       with:
         name: data-excel-rs
-        path: Hasil_Email_RS.xlsx
+        path: Hasil_Scraping_RS.xlsx
