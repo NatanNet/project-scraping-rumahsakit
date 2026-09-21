@@ -118,7 +118,7 @@ const ExcelJS = require('exceljs');
     await browser.close();
   }
 
-  // Export Excel
+ // Export ke File Excel
   const workbook = new ExcelJS.Workbook();
   const worksheet = workbook.addWorksheet('Data Rumah Sakit');
 
@@ -130,5 +130,5 @@ const ExcelJS = require('exceljs');
   results.forEach(item => worksheet.addRow(item));
 
   await workbook.xlsx.writeFile('Hasil_Scraping_RS.xlsx');
-  console.log('Proses selesai! File Hasil_Scraping_RS.xlsx berhasil diperbarui.');
+  console.log('Proses selesai! File Hasil_Scraping_RS.xlsx berhasil dibuat.');
 })();
