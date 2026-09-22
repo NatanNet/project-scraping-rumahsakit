@@ -35,12 +35,11 @@ const ExcelJS = require('exceljs');
 
     console.log(`Berhasil mengambil ${hospitalNames.length} nama rumah sakit.`);
 
-    // Daftar domain yang WAJIB dibuang
+    // Daftar domain yang wajib diabaikan
     const blacklistedDomains = [
       'kemkes.go.id', 'wikipedia.org', 'wikimedia.org', 
       'facebook.com', 'instagram.com', 'twitter.com', 'linkedin.com', 'youtube.com',
-      'halodoc.com', 'alodokter.com', 'klikdokter.com',
-      'rumah123.com', 'sehatq.com', 'jadwalpraktek.com'
+      'halodoc.com', 'alodokter.com', 'klikdokter.com', 'rumah123.com', 'sehatq.com'
     ];
 
     for (const name of hospitalNames) {
@@ -51,31 +50,44 @@ const ExcelJS = require('exceljs');
       const searchPage = await context.newPage();
 
       try {
-        // Query DuckDuckGo Lite (Ringan, Cepat, Tidak Mudah Kena Bot Block)
-        const query = encodeURIComponent(`"${name}" site:.id OR site:.com`);
-        await searchPage.goto(`https://lite.duckduckgo.com/lite/`, { 
+        // Step 1 & 2: Cari via Bing (Langsung Buka Query URL)
+        const query = encodeURIComponent(`"Rumah Sakit" "${name}" official site`);
+        await searchPage.goto(`https://www.bing.com/search?q=${query}`, { 
           waitUntil: 'domcontentloaded', 
-          timeout: 20000 
+          timeout: 25000 
         });
 
-        // Form submit di DDG Lite
-        await searchPage.type('input[name="q"]', `"${name}" official website contact email`);
-        await searchPage.click('input[type="submit"]');
-        await searchPage.waitForLoadState('domcontentloaded');
-
-        // Ambil link hasil pencarian
-        const links = await searchPage.$$eval('a.result-link', els => els.map(e => e.href)).catch(() => []);
+        // Ambil semua link dari hasil pencarian Bing
+        const rawLinks = await searchPage.$$eval('#b_results h2 a', els => els.map(e => e.href)).catch(() => []);
 
         let targetUrl = null;
 
-        for (let link of links) {
-          const isBlacklisted = blacklistedDomains.some(domain => link.toLowerCase().includes(domain));
-          if (!isBlacklisted && (link.startsWith('http://') || link.startsWith('https://'))) {
-            targetUrl = link;
-            break;
+        for (let link of rawLinks) {
+          let cleanUrl = link;
+
+          // Dekode link tracking Bing jika ada
+          if (link.includes('bing.com/ck/a')) {
+            try {
+              const urlParams = new URLSearchParams(link.split('?')[1]);
+              const uParam = urlParams.get('u');
+              if (uParam) {
+                let base64Str = uParam.replace(/^a1/, '');
+                cleanUrl = Buffer.from(base64Str, 'base64').toString('utf-8');
+              }
+            } catch (e) {
+              cleanUrl = link;
+            }
+          }
+
+          const isBlacklisted = blacklistedDomains.some(domain => cleanUrl.toLowerCase().includes(domain));
+          
+          if (!isBlacklisted && (cleanUrl.startsWith('http://') || cleanUrl.startsWith('https://'))) {
+            targetUrl = cleanUrl;
+            break; // Ambil URL valid pertama
           }
         }
 
+        // Step 3: Klik/Buka Website Valid RS
         if (targetUrl) {
           console.log(`Membuka website resmi: ${targetUrl}`);
           const rsPage = await context.newPage();
@@ -83,7 +95,7 @@ const ExcelJS = require('exceljs');
           await rsPage.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
           await rsPage.waitForTimeout(2000);
 
-          // 1. Prioritas Utama: Selektor mailto:[cite: 14]
+          // Step 4: Cari Email via mailto: (Presisi 100% seperti inspect element kamu)
           const mailtoEmails = await rsPage.$$eval('a[href^="mailto:"]', links => {
             return links.map(a => a.href.replace('mailto:', '').split('?')[0].trim());
           }).catch(() => []);
@@ -92,25 +104,37 @@ const ExcelJS = require('exceljs');
             emailFound = mailtoEmails[0];
             console.log(`>>> EMAIL DITEMUKAN (mailto): ${emailFound}`);
           } else {
-            // 2. Ekstraksi Teks Footer / Kontak
-            const pageContent = await rsPage.content();
-            const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.(?:co\.id|id|com|go\.id)/g;
-            const matches = pageContent.match(emailRegex);
+            // Coba buka halaman Contact Us jika di Homepage mailto tidak ditemukan
+            const contactLink = await rsPage.$('a[href*="contact"], a[href*="kontak"], a:has-text("Contact"), a:has-text("Kontak")').catch(() => null);             if (contactLink) {               console.log('Membuka halaman kontak...');               await Promise.all([                 rsPage.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}),                 contactLink.click().catch(() => {})               ]);                const contactMailtos = await rsPage.$$eval('a[href^="mailto:"]', links => {
+                return links.map(a => a.href.replace('mailto:', '').split('?')[0].trim());
+              }).catch(() => []);
 
-            if (matches && matches.length > 0) {
-              const cleanEmails = [...new Set(matches)].filter(e => 
-                !blacklistedDomains.some(b => e.includes(b)) &&
-                !e.includes('example') &&
-                !e.includes('bootstrap') &&
-                !e.includes('w3.org') &&
-                !e.endsWith('.png') &&
-                !e.endsWith('.jpg') &&
-                !e.endsWith('.webp')
-              );
+              if (contactMailtos.length > 0) {
+                emailFound = contactMailtos[0];
+                console.log(`>>> EMAIL DITEMUKAN (mailto kontak): ${emailFound}`);
+              }
+            }
 
-              if (cleanEmails.length > 0) {
-                emailFound = cleanEmails[0];
-                console.log(`>>> EMAIL DITEMUKAN (Regex): ${emailFound}`);
+            // Fallback: Regex Teks di Halaman Website
+            if (emailFound === 'Tidak Ditemukan') {
+              const content = await rsPage.content();
+              const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.(?:co\.id|id|com|go\.id)/g;
+              const matches = content.match(emailRegex);
+
+              if (matches && matches.length > 0) {
+                const cleanEmails = [...new Set(matches)].filter(e => 
+                  !blacklistedDomains.some(b => e.includes(b)) &&
+                  !e.includes('example') &&
+                  !e.includes('bootstrap') &&
+                  !e.endsWith('.png') &&
+                  !e.endsWith('.jpg') &&
+                  !e.endsWith('.webp')
+                );
+
+                if (cleanEmails.length > 0) {
+                  emailFound = cleanEmails[0];
+                  console.log(`>>> EMAIL DITEMUKAN (Regex): ${emailFound}`);
+                }
               }
             }
           }
