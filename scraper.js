@@ -43,14 +43,13 @@ const ExcelJS = require('exceljs');
       const searchPage = await context.newPage();
 
       try {
-        // 1. Cari via Bing
-        const query = encodeURIComponent(`"${name}" official site email contact`);
+        // Query Bing yang sangat spesifik ke Wilayah Indonesia
+        const query = encodeURIComponent(`"Rumah Sakit" "${name}" site:.id OR site:.com contact email`);
         await searchPage.goto(`https://www.bing.com/search?q=${query}`, { 
           waitUntil: 'domcontentloaded', 
           timeout: 20000 
         });
 
-        // Ambil atribut href dari hasil pencarian
         const rawLinks = await searchPage.$$eval('#b_results h2 a', els => els.map(e => e.href)).catch(() => []);
 
         let targetUrl = null;
@@ -58,15 +57,12 @@ const ExcelJS = require('exceljs');
         for (let link of rawLinks) {
           let cleanUrl = link;
 
-          // Jika berupa link redirect Bing (bing.com/ck/a?!...), ekstrak URL aslinya dari parameter 'u'
           if (link.includes('bing.com/ck/a')) {
             try {
               const urlParams = new URLSearchParams(link.split('?')[1]);
               const uParam = urlParams.get('u');
               if (uParam) {
-                // Parameter 'u' di-encode dalam bentuk Base64 oleh Bing (diawali 'a1')
                 let base64Str = uParam.replace(/^a1/, '');
-                // Dekode Base64 ke URL normal
                 cleanUrl = Buffer.from(base64Str, 'base64').toString('utf-8');
               }
             } catch (e) {
@@ -74,16 +70,17 @@ const ExcelJS = require('exceljs');
             }
           }
 
-          // Filter agar tidak mengambil website ensiklopedia, media sosial, atau direktori umum
+          // Filter domain pengganggu / media sosial / direktori
           const isIgnored = [
             'kemkes.go.id', 'wikipedia.org', 'wikimedia.org', 
             'facebook.com', 'instagram.com', 'twitter.com', 
-            'linkedin.com', 'youtube.com', 'halodoc.com', 'alodokter.com'
+            'linkedin.com', 'youtube.com', 'halodoc.com', 'alodokter.com',
+            'att.com', 'adobe.com', 'golflens.io', 'velezsarsfield'
           ].some(domain => cleanUrl.toLowerCase().includes(domain));
 
           if (!isIgnored && (cleanUrl.startsWith('http://') || cleanUrl.startsWith('https://'))) {
             targetUrl = cleanUrl;
-            break; // Ambil URL valid pertama
+            break;
           }
         }
 
@@ -91,11 +88,10 @@ const ExcelJS = require('exceljs');
           console.log(`Membuka website resmi: ${targetUrl}`);
           const rsPage = await context.newPage();
           
-          // Gunakan waitUntil 'commit' agar tidak menggantung lama menunggu gambar/iklan
-          await rsPage.goto(targetUrl, { waitUntil: 'commit', timeout: 15000 }).catch(() => {});
-          await rsPage.waitForTimeout(2000); // Tunggu 2 detik untuk render elemen dasar
+          await rsPage.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+          await rsPage.waitForTimeout(2000);
 
-          // Ekstrak Email via tag mailto:
+          // METODE 1: Tag <a href="mailto:...">
           const mailtoEmails = await rsPage.$$eval('a[href^="mailto:"]', links => {
             return links.map(a => a.href.replace('mailto:', '').split('?')[0].trim());
           }).catch(() => []);
@@ -104,23 +100,32 @@ const ExcelJS = require('exceljs');
             emailFound = mailtoEmails[0];
             console.log(`>>> EMAIL DITEMUKAN (mailto): ${emailFound}`);
           } else {
-            // Regex Backup
-            const content = await rsPage.content();
-            const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-            const matches = content.match(emailRegex);
+            // METODE 2: MANIPULASI DOM TEKS (Mencari khusus di elemen Footer / Paragraph)
+            const domTexts = await rsPage.$$eval('footer, p, span, div', els => 
+              els.map(el => el.innerText).filter(t => t && t.includes('@'))
+            ).catch(() => []);
+
+            const fullText = domTexts.join(' ');
+            
+            // Regex Email yang Sangat Ketat (Memfilter file .webp, .png, dan domain asing/system)
+            const strictEmailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.(?:co\.id|id|com|go\.id|org|net)/g;
+            const matches = fullText.match(strictEmailRegex);
 
             if (matches && matches.length > 0) {
               const cleanEmails = [...new Set(matches)].filter(e => 
-                !e.endsWith('.png') && 
-                !e.endsWith('.jpg') && 
-                !e.endsWith('.svg') &&
+                !e.includes('adobe') &&
                 !e.includes('example') &&
                 !e.includes('bootstrap') &&
-                !e.includes('w3.org')
+                !e.includes('w3.org') &&
+                !e.includes('sentry') &&
+                !e.includes('schema') &&
+                !e.endsWith('.webp') &&
+                !e.endsWith('.png')
               );
+
               if (cleanEmails.length > 0) {
                 emailFound = cleanEmails[0];
-                console.log(`>>> EMAIL DITEMUKAN (Regex): ${emailFound}`);
+                console.log(`>>> EMAIL DITEMUKAN (DOM Text): ${emailFound}`);
               }
             }
           }
@@ -156,5 +161,5 @@ const ExcelJS = require('exceljs');
   results.forEach(item => worksheet.addRow(item));
 
   await workbook.xlsx.writeFile('Hasil_Scraping_RS.xlsx');
-  console.log('Proses selesai! File Hasil_Scraping_RS.xlsx berhasil dibuat.');
+  console.log('Proses selesai! File Hasil_Scraping_RS.xlsx berhasil diperbarui.');
 })();
