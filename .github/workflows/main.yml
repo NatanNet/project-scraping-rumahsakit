@@ -1,9 +1,9 @@
 name: RS Email Scraper Workflow
 
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
+  schedule:
+    - cron: '0 1 * * 1'  # Otomatis Senin jam 08:00 WIB
 
 jobs:
   scrape:
@@ -16,19 +16,27 @@ jobs:
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: 24
+        node-version: 22
 
     - name: Install Dependencies
-      run: |
-        npm ci
-        npx playwright install-deps
-        npx playwright install
+      run: npm ci
 
-    - name: Run Scraper Script
-      run: node scraper.js
+    - name: Install Firefox Playwright
+      run: npx playwright install firefox
+
+    - name: Run Scraper (With Auto-Retry)
+      run: |
+        for attempt in 1 2 3; do 
+          npm run scrape:collect && break
+          echo "Scraping failed (attempt $attempt/3)"
+          [[ "$attempt" -eq 3 ]] && exit 1
+        done
+
+    - name: Export JSON to Excel
+      run: npm run scrape:export
 
     - name: Upload Excel Artifact
       uses: actions/upload-artifact@v4
       with:
         name: data-excel-rs
-        path: Hasil_Scraping_RS.xlsx
+        path: data/output/Hasil_Scraping_RS.xlsx

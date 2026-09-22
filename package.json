@@ -4,7 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "scrape:collect": "node src/collect.js",
+    "scrape:export": "node src/export.js"
   },
   "keywords": [],
   "author": "",
@@ -14,6 +16,7 @@
     "@playwright/test": "^1.63.0"
   },
   "dependencies": {
-    "exceljs": "^4.4.0"
+    "exceljs": "^4.4.0",
+    "playwright": "^1.40.0"
   }
 }
