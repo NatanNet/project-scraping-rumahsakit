@@ -17,7 +17,8 @@ async function exportToExcel() {
 
   worksheet.columns = [
     { header: 'Nama Rumah Sakit', key: 'rumahSakit', width: 40 },
-    { header: 'Email', key: 'email', width: 40 }
+    { header: 'Email', key: 'email', width: 40 },
+    { header: 'No. Telepon', key: 'telepon', width: 25 }
   ];
 
   rawData.forEach(item => worksheet.addRow(item));
